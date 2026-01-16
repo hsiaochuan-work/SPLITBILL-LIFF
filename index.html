@@ -1,0 +1,150 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>快速分帳</title>
+    <script src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; padding: 20px; background-color: #f5f5f5; }
+        .card { background: white; padding: 20px; border-radius: 10px; box-shadow: 0 2px 5px rgba(0,0,0,0.1); }
+        h2 { margin-top: 0; color: #333; }
+        label { display: block; margin-top: 15px; font-weight: bold; color: #555; }
+        input[type="text"], input[type="number"], select { width: 100%; padding: 10px; margin-top: 5px; border: 1px solid #ddd; border-radius: 5px; box-sizing: border-box; font-size: 16px; }
+        
+        /* 成員勾選區塊樣式 */
+        #members-container { margin-top: 10px; display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+        .checkbox-item { display: flex; align-items: center; background: #fafafa; padding: 10px; border-radius: 5px; border: 1px solid #eee; }
+        .checkbox-item input { margin-right: 10px; width: 20px; height: 20px; }
+        
+        button { width: 100%; padding: 15px; background-color: #06c755; color: white; border: none; border-radius: 5px; font-size: 18px; font-weight: bold; margin-top: 25px; cursor: pointer; }
+        button:disabled { background-color: #ccc; }
+        .loading { text-align: center; color: #888; font-size: 14px; margin-top: 10px; }
+    </style>
+</head>
+<body>
+
+<div class="card">
+    <h2>💸 新增記帳</h2>
+    
+    <label>項目</label>
+    <input type="text" id="item" placeholder="例如：晚餐、計程車">
+
+    <label>金額</label>
+    <input type="number" id="price" placeholder="輸入金額">
+
+    <label>誰先付錢？</label>
+    <select id="payer">
+        <option value="我">我 (當前用戶)</option>
+        </select>
+
+    <label>誰要分攤？ <span style="font-size:12px; font-weight:normal; color:#888;">(沒勾 = 全員分攤)</span></label>
+    <div id="loading-text" class="loading">正在載入成員名單...</div>
+    <div id="members-container"></div>
+
+    <button id="submit-btn" onclick="submitBill()">送出記帳</button>
+</div>
+
+<script>
+    // 🔴 設定區：請換成你的資訊
+    const LIFF_ID = "2008909973-yvMKbhMT"; 
+    const API_GET_MEMBERS = "https://hsiaochuan.zeabur.app/webhook/get-members"; // 剛剛建立的 GET API
+    const API_POST_BILL = "https://hsiaochuan.zeabur.app/webhook/split-bill";   // 上一輪建立的 POST API
+
+    // 1. 初始化 LIFF
+    document.addEventListener("DOMContentLoaded", async () => {
+        try {
+            await liff.init({ liffId: LIFF_ID });
+            if (!liff.isLoggedIn()) {
+                liff.login();
+            }
+            // 取得使用者資料 (為了知道"我"是誰，選填)
+            const profile = await liff.getProfile();
+            // 可以在這裡把 payer 下拉選單預設值改成 profile.displayName
+
+            // 載入成員名單
+            loadMembers();
+        } catch (err) {
+            alert("LIFF 初始化失敗: " + err);
+        }
+    });
+
+    // 2. 從 n8n 讀取成員名單
+    async function loadMembers() {
+        try {
+            const response = await fetch(API_GET_MEMBERS);
+            const data = await response.json(); 
+            // 假設 n8n 回傳格式是 { "members": ["小明", "小華", "小美"] }
+            
+            const container = document.getElementById('members-container');
+            document.getElementById('loading-text').style.display = 'none';
+
+            data.members.forEach(member => {
+                const div = document.createElement('div');
+                div.className = 'checkbox-item';
+                div.innerHTML = `
+                    <input type="checkbox" name="split_member" value="${member}">
+                    <span>${member}</span>
+                `;
+                container.appendChild(div);
+            });
+        } catch (err) {
+            document.getElementById('loading-text').innerText = "無法載入名單";
+            console.error(err);
+        }
+    }
+
+    // 3. 送出資料
+    async function submitBill() {
+        const item = document.getElementById('item').value;
+        const price = document.getElementById('price').value;
+        const payer = document.getElementById('payer').value;
+        
+        // 抓取所有被勾選的人
+        const checkboxes = document.querySelectorAll('input[name="split_member"]:checked');
+        const selectedMembers = Array.from(checkboxes).map(cb => cb.value);
+
+        if(!item || !price) {
+            alert("請輸入項目和金額！");
+            return;
+        }
+
+        const btn = document.getElementById('submit-btn');
+        btn.innerText = "處理中...";
+        btn.disabled = true;
+
+        try {
+            // 取得當前使用者名字 (若 payer 選 '我')
+            let finalPayer = payer;
+            if(payer === '我') {
+                const profile = await liff.getProfile();
+                finalPayer = profile.displayName; // 用 LINE 暱稱，或是你想要寫死也可以
+            }
+
+            const payload = {
+                item: item,
+                price: parseInt(price),
+                payer: finalPayer,
+                selectedMembers: selectedMembers // 傳送勾選的名單 (空陣列代表沒勾)
+            };
+
+            // 發送給 n8n
+            await fetch(API_POST_BILL, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+
+            alert("✅ 記帳成功！");
+            liff.closeWindow(); // 關閉視窗
+
+        } catch (err) {
+            alert("發生錯誤：" + err);
+            btn.innerText = "送出記帳";
+            btn.disabled = false;
+        }
+    }
+</script>
+
+</body>
+</html>
